@@ -288,14 +288,16 @@ export default function App() {
       <StatusBar style="light" />
 
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.brand}>Voxcast</Text>
           <Text style={styles.tagline}>Speak. Reshape. Send.</Text>
         </View>
         <View style={styles.headerBtns}>
-          <HeaderBtn label="New" onPress={deleteAll} green />
-          <HeaderBtn label="History" onPress={() => setShowHistory(true)} />
-          <HeaderBtn label="Settings" onPress={() => setShowSettings(true)} />
+          {(clips.length > 0 || result || recState !== 'idle') && (
+            <IconBtn glyph="＋" label="New" onPress={deleteAll} accent />
+          )}
+          <IconBtn glyph="⟲" label="History" onPress={() => setShowHistory(true)} />
+          <IconBtn glyph="⚙" label="Settings" onPress={() => setShowSettings(true)} />
         </View>
       </View>
 
@@ -314,16 +316,18 @@ export default function App() {
           <Text style={styles.modeCardChevron}>›</Text>
         </TouchableOpacity>
 
-        <View style={styles.recipientRow}>
-          <Text style={styles.label}>To (optional)</Text>
-          <TextInput
-            style={styles.recipientInput}
-            placeholder={isEmailMode ? 'Recipient name' : 'e.g. Sarah'}
-            placeholderTextColor={COLORS.textMuted}
-            value={recipient}
-            onChangeText={setRecipient}
-          />
-        </View>
+        {isEmailMode && (
+          <View style={styles.recipientRow}>
+            <Text style={styles.label}>To (optional)</Text>
+            <TextInput
+              style={styles.recipientInput}
+              placeholder="Recipient name"
+              placeholderTextColor={COLORS.textMuted}
+              value={recipient}
+              onChangeText={setRecipient}
+            />
+          </View>
+        )}
 
         <View style={styles.recorderPanel}>
 
@@ -350,72 +354,39 @@ export default function App() {
             <Text style={styles.statusBarTime}>{formatTime(recordSeconds)}</Text>
           </View>
 
-          <Pressable
-            onPress={tapPrimary}
-            disabled={loading}
-            style={({ pressed }) => [
-              styles.recordButton,
-              recState === 'recording' && styles.recordButtonRecording,
-              recState === 'paused' && styles.recordButtonPaused,
-              pressed && styles.recordButtonPressed,
-              loading && { opacity: 0.5 },
-            ]}>
-            <Text style={styles.recordIcon}>
-              {recState === 'recording' ? '■' : recState === 'paused' ? '▶' : '●'}
-            </Text>
-            <Text style={styles.recordLabel}>
-              {recState === 'recording' ? 'STOP' : recState === 'paused' ? 'RESUME' : 'RECORD'}
-            </Text>
-          </Pressable>
+          <View style={styles.actionRowMain}>
+            <Pressable
+              onPress={tapPrimary}
+              disabled={loading}
+              style={({ pressed }) => [
+                styles.recordPill,
+                recState === 'recording' && styles.recordPillRecording,
+                pressed && { opacity: 0.85 },
+                loading && { opacity: 0.5 },
+              ]}>
+              <Text style={styles.recordPillGlyph}>
+                {recState === 'recording' ? '■' : '●'}
+              </Text>
+              <Text style={styles.recordPillLabel}>
+                {recState === 'recording' ? 'Stop' : 'Record'}
+              </Text>
+            </Pressable>
 
-          <View style={styles.controlsRow}>
-            <ControlIcon
-              glyph={recState === 'paused' ? '▶' : '⏸'}
-              label={recState === 'paused' ? 'Resume' : 'Pause'}
-              onPress={togglePause}
-              disabled={loading || recState === 'idle'}
-            />
-            <ControlIcon
-              glyph="+"
-              label="Add"
-              onPress={addClip}
-              disabled={loading || recState !== 'idle' || clips.length === 0}
-            />
-            <ControlIcon
-              glyph="↶"
-              label="Undo"
-              onPress={redoLast}
-              disabled={loading || recState !== 'idle' || clips.length === 0}
-            />
-            <ControlIcon
-              glyph="↻"
-              label="Retake"
-              onPress={retakeAll}
-              disabled={loading || recState !== 'idle' || clips.length === 0}
-            />
-            <ControlIcon
-              glyph="✕"
-              label="Delete"
-              onPress={deleteAll}
-              disabled={loading || (recState === 'idle' && clips.length === 0)}
-              danger
-            />
+            <TouchableOpacity
+              onPress={send}
+              disabled={loading || (clips.length === 0 && recState === 'idle')}
+              style={[
+                styles.transcribePill,
+                (loading || (clips.length === 0 && recState === 'idle')) && styles.transcribePillDisabled,
+              ]}
+              activeOpacity={0.85}>
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.transcribePillLabel}>Transcribe →</Text>
+              )}
+            </TouchableOpacity>
           </View>
-
-          <TouchableOpacity
-            onPress={send}
-            disabled={loading || (clips.length === 0 && recState === 'idle')}
-            style={[
-              styles.sendBtn,
-              (loading || (clips.length === 0 && recState === 'idle')) && styles.sendBtnDisabled,
-            ]}
-            activeOpacity={0.85}>
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.sendBtnText}>SEND  →</Text>
-            )}
-          </TouchableOpacity>
 
         </View>
 
@@ -501,6 +472,18 @@ function HeaderBtn({ label, onPress, green }) {
   return (
     <TouchableOpacity onPress={onPress} style={[styles.headerBtn, green && styles.headerBtnGreen]}>
       <Text style={[styles.headerBtnText, green && styles.headerBtnTextGreen]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function IconBtn({ glyph, label, onPress, accent }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      accessibilityLabel={label}
+      style={[styles.iconBtn, accent && styles.iconBtnAccent]}
+      activeOpacity={0.7}>
+      <Text style={[styles.iconBtnGlyph, accent && styles.iconBtnGlyphAccent]}>{glyph}</Text>
     </TouchableOpacity>
   );
 }
@@ -817,11 +800,81 @@ const styles = StyleSheet.create({
   },
   brand: { color: COLORS.text, fontSize: 24, fontWeight: '700', letterSpacing: 0.3, fontFamily: sysFont },
   tagline: { color: COLORS.textMuted, fontSize: 12, marginTop: 2, fontFamily: sysFont },
-  headerBtns: { flexDirection: 'row', gap: 8 },
+  headerBtns: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   headerBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: COLORS.panel, borderWidth: 1, borderColor: COLORS.border },
   headerBtnText: { color: COLORS.text, fontSize: 13, fontWeight: '600' },
   headerBtnGreen: { backgroundColor: COLORS.success, borderColor: COLORS.success },
   headerBtnTextGreen: { color: '#fff' },
+  iconBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: COLORS.panel, borderWidth: 1, borderColor: COLORS.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  iconBtnAccent: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
+  iconBtnGlyph: { color: COLORS.text, fontSize: 18, fontWeight: '600' },
+  iconBtnGlyphAccent: { color: '#fff' },
+
+  recorderPanel: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24, alignItems: 'center' },
+  statusBar: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: COLORS.panel, borderWidth: 1, borderColor: COLORS.border,
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 999,
+    alignSelf: 'stretch', marginBottom: 24,
+  },
+  statusDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: COLORS.textMuted, marginRight: 10,
+  },
+  statusBarText: {
+    flex: 1, color: COLORS.textDim, fontSize: 12,
+    fontWeight: '700', letterSpacing: 1.4,
+  },
+  statusBarTime: {
+    color: COLORS.text, fontSize: 14, fontWeight: '700',
+    fontVariant: ['tabular-nums'], letterSpacing: 0.5,
+  },
+
+  ctrlIcon: { flex: 1, alignItems: 'center', paddingVertical: 4 },
+  ctrlIconDisabled: { opacity: 0.3 },
+  ctrlIconCircle: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: COLORS.panel,
+    borderWidth: 1, borderColor: COLORS.border,
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 6,
+  },
+  ctrlIconCircleDanger: { borderColor: COLORS.danger },
+  ctrlIconGlyph: { color: COLORS.text, fontSize: 18, fontWeight: '600' },
+  ctrlIconLabel: { color: COLORS.textDim, fontSize: 11, fontWeight: '500' },
+
+  sendBtnDisabled: { opacity: 0.5 },
+
+  actionRowMain: {
+    flexDirection: 'row', gap: 12, alignSelf: 'stretch',
+    alignItems: 'stretch', marginTop: 8,
+  },
+  recordPill: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 18, borderRadius: 14, gap: 10,
+    backgroundColor: COLORS.accent,
+    shadowColor: COLORS.accent, shadowOpacity: 0.35, shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 }, elevation: 6,
+  },
+  recordPillRecording: {
+    backgroundColor: COLORS.danger, shadowColor: COLORS.danger,
+  },
+  recordPillGlyph: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  recordPillLabel: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
+
+  transcribePill: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 18, borderRadius: 14,
+    backgroundColor: COLORS.success,
+    shadowColor: COLORS.success, shadowOpacity: 0.3, shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 }, elevation: 5,
+  },
+  transcribePillDisabled: { opacity: 0.4, shadowOpacity: 0 },
+  transcribePillLabel: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
 
   modeCard: {
     flexDirection: 'row', alignItems: 'center',
