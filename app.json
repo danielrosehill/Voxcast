@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "Voxcast",
+    "slug": "voxcast",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.danielrosehill.voxcast",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Voxcast uses the microphone to record voice notes for transcription and reformatting."
+      }
+    },
+    "android": {
+      "package": "com.danielrosehill.voxcast",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      },
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "RECORD_AUDIO",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Voxcast uses the microphone to record voice notes for transcription and reformatting."
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "owner": "danielrosehill"
+  }
+}

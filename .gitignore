@@ -1,0 +1,20 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.DS_Store
+
+# Android
+android/build/
+android/app/build/
+android/.gradle/
+android/.cxx/
+android/local.properties
+*.keystore
+!debug.keystore
+
+# iOS
+ios/Pods/
+ios/build/
+*.xcworkspace
