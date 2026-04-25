@@ -1,71 +1,95 @@
 // Voxcast preset catalog. Each mode is a single-purpose voice-to-text reformatter.
 // No layering — exactly one mode is active at a time.
+//
+// Two tiers:
+//  - Curated MODES: hand-tuned, bilingual where relevant, dual-output for emails.
+//  - Library: ~200 prompts imported from
+//    github.com/danielrosehill/Text-Transformation-Prompt-Library, accessed via
+//    a searchable browser. Library entries are addressed as `lib:<slug>`.
+
+import LIBRARY from './library.json';
+
+export const TABS = [
+  { key: 'general', label: 'General' },
+  { key: 'translation', label: 'Translation' },
+];
 
 export const GROUPS = [
-  { key: 'cleanup', label: 'Cleanup', modes: ['basic'] },
-  { key: 'work', label: 'Work', modes: ['businessEmail', 'aiPrompt', 'devPrompt'] },
-  { key: 'personal', label: 'Personal', modes: ['todo', 'noteToSelf'] },
-  { key: 'hebrew', label: 'Hebrew', modes: ['casualHebrew', 'emailHebrew'] },
+  { key: 'cleanup', label: 'Cleanup', tab: 'general', modes: ['basic'] },
+  { key: 'work', label: 'Work', tab: 'general', modes: ['businessEmail', 'aiPrompt', 'devPrompt'] },
+  { key: 'personal', label: 'Personal', tab: 'general', modes: ['todo', 'noteToSelf', 'shoppingList', 'choreList'] },
+  { key: 'hebrew', label: 'Hebrew', tab: 'translation', modes: ['casualHebrew', 'emailHebrew'] },
 ];
 
 export const MODES = {
   basic: {
-    label: 'Basic Cleanup',
-    icon: '✎',
+    label: 'Basic',
     group: 'cleanup',
     description: 'Light cleanup — punctuation, casing, filler words. Keeps your voice intact.',
     output: 'text',
   },
   businessEmail: {
-    label: 'Business Email',
-    icon: '✉',
+    label: 'Email',
     group: 'work',
     description: 'Professional email with subject line and body. Concise, polite, ready to send.',
     output: 'email',
   },
   aiPrompt: {
     label: 'AI Prompt',
-    icon: '✦',
     group: 'work',
     description: 'Restructured into a clear prompt for an LLM — context, task, constraints.',
     output: 'text',
   },
   devPrompt: {
     label: 'Dev Prompt',
-    icon: '⌨',
     group: 'work',
     description: 'Engineering-focused prompt for a coding agent — goal, constraints, acceptance.',
     output: 'text',
   },
   todo: {
-    label: 'To-Do List',
-    icon: '☑',
+    label: 'To-Do',
     group: 'personal',
     description: 'Bulleted action items extracted from a verbal brain-dump.',
     output: 'text',
   },
   noteToSelf: {
-    label: 'Note to Self',
-    icon: '⌗',
+    label: 'Note',
     group: 'personal',
     description: 'Personal note — concise, organized, written in your own voice.',
     output: 'text',
   },
+  shoppingList: {
+    label: 'Shopping List',
+    group: 'personal',
+    description: 'Items to buy, extracted as a clean bulleted list with quantities preserved.',
+    output: 'text',
+  },
+  choreList: {
+    label: 'Chore List',
+    group: 'personal',
+    description: 'Household chores extracted from a brain-dump as a tidy bulleted list.',
+    output: 'text',
+  },
   casualHebrew: {
-    label: 'Casual Hebrew',
-    icon: 'א',
+    label: 'Casual',
     group: 'hebrew',
     description: 'Casual conversational Hebrew text (Hebrew script).',
     output: 'text',
   },
   emailHebrew: {
-    label: 'Email (Hebrew)',
-    icon: '✉א',
+    label: 'Email',
     group: 'hebrew',
     description: 'Hebrew email with subject line and body. Polite professional register.',
     output: 'email',
   },
 };
+
+export function fullLabel(modeKey) {
+  const m = MODES[modeKey];
+  if (!m) return modeKey;
+  const g = GROUPS.find(g => g.key === m.group);
+  return g ? `${g.label} → ${m.label}` : m.label;
+}
 
 function senderClause(userName) {
   if (!userName) return 'The speaker is the SENDER of any message produced. Do not address the message to the speaker.';
@@ -179,6 +203,35 @@ export function buildSystemPrompt(mode, { userName, recipient } = {}) {
         `Return ONLY the note text.`,
       ].join('\n');
 
+    case 'shoppingList':
+      return [
+        `You are a shopping-list assistant. Transcribe the audio, then extract every item the speaker said they need to buy.`,
+        sender,
+        ``,
+        `Rules:`,
+        `- One bullet per item, starting with "- ".`,
+        `- Preserve quantities, sizes, brands, and any qualifiers the speaker stated (e.g. "- Milk (2 litres, oat)").`,
+        `- Capitalize the first letter of each item. Use singular or plural exactly as the speaker said.`,
+        `- Group items only if the speaker explicitly grouped them (e.g. "for the bbq:"). Otherwise keep one flat list.`,
+        `- Do NOT invent items, quantities, or brands.`,
+        ``,
+        `Return ONLY the bulleted list. No headings, no preamble.`,
+      ].join('\n');
+
+    case 'choreList':
+      return [
+        `You are a household-task assistant. Transcribe the audio, then extract every chore or household task the speaker mentioned.`,
+        sender,
+        ``,
+        `Rules:`,
+        `- One bullet per chore, starting with "- " followed by an imperative verb (Vacuum, Take out, Fold, Replace, Wipe).`,
+        `- Preserve any rooms, frequencies, or specifics the speaker stated (e.g. "- Wipe kitchen counters — daily").`,
+        `- Skip vague narration. If a chore has context that affects how/when, append after an em-dash on the same line.`,
+        `- Do NOT invent chores.`,
+        ``,
+        `Return ONLY the bulleted list. No headings, no preamble.`,
+      ].join('\n');
+
     case 'casualHebrew':
       return [
         `אתה עוזר תמלול. תמלל את ההקלטה, ואז כתוב מחדש את התוכן כהודעת טקסט עברית בסגנון יומיומי וזורם.`,
@@ -219,6 +272,88 @@ export function buildSystemPrompt(mode, { userName, recipient } = {}) {
     default:
       return `Transcribe the audio verbatim. Return only the transcription.`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Library access (Tier 2)
+// ---------------------------------------------------------------------------
+
+const LIB_BY_SLUG = Object.fromEntries(LIBRARY.map(p => [p.slug, p]));
+
+export const LIB_PREFIX = 'lib:';
+
+export function isLibraryMode(modeKey) {
+  return typeof modeKey === 'string' && modeKey.startsWith(LIB_PREFIX);
+}
+
+export function libSlug(modeKey) {
+  return isLibraryMode(modeKey) ? modeKey.slice(LIB_PREFIX.length) : null;
+}
+
+export function getLibraryEntry(slug) {
+  return LIB_BY_SLUG[slug] || null;
+}
+
+export function getLibrary() { return LIBRARY; }
+
+export function searchLibrary(query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return LIBRARY;
+  return LIBRARY.filter(p => {
+    const hay = (p.name + ' ' + (p.description || '') + ' ' + p.slug).toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+export function resolveMode(modeKey) {
+  if (isLibraryMode(modeKey)) {
+    const e = getLibraryEntry(libSlug(modeKey));
+    if (!e) return null;
+    return {
+      key: modeKey,
+      label: e.name,
+      group: 'library',
+      groupLabel: 'Library',
+      description: e.description || 'Imported from Text-Transformation-Prompt-Library.',
+      output: 'text',
+      isLibrary: true,
+    };
+  }
+  const m = MODES[modeKey];
+  if (!m) return null;
+  const g = GROUPS.find(g => g.key === m.group);
+  return {
+    key: modeKey,
+    label: m.label,
+    group: m.group,
+    groupLabel: g ? g.label : '',
+    description: m.description,
+    output: m.output,
+    isLibrary: false,
+  };
+}
+
+export function fullLabelFor(modeKey) {
+  const r = resolveMode(modeKey);
+  if (!r) return modeKey;
+  return r.groupLabel ? `${r.groupLabel} → ${r.label}` : r.label;
+}
+
+export function buildSystemPromptForMode(modeKey, ctx = {}) {
+  if (isLibraryMode(modeKey)) {
+    const e = getLibraryEntry(libSlug(modeKey));
+    if (!e) return `Transcribe the audio verbatim. Return only the transcription.`;
+    const sender = senderClause(ctx.userName);
+    return [
+      `You are a transcription-and-rewrite bot. Transcribe the user's audio, then transform the text according to the rules below.`,
+      sender,
+      ``,
+      e.system_prompt,
+      ``,
+      `Return ONLY the transformed text. No preamble, no quotes, no explanation, no markdown fences.`,
+    ].join('\n');
+  }
+  return buildSystemPrompt(modeKey, ctx);
 }
 
 // Parse a model response into { subject, body } for email modes.

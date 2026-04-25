@@ -18,6 +18,7 @@ export async function clearApiKey() { return SecureStore.deleteItemAsync(KEY_OPE
 const DEFAULT_SETTINGS = {
   userName: '',
   activeMode: 'basic',
+  rememberLastPreset: false,
 };
 
 export async function getSettings() {

@@ -1,4 +1,4 @@
-import { buildSystemPrompt } from './modes';
+import { buildSystemPromptForMode } from './modes';
 
 async function uriToBase64(uri) {
   const res = await fetch(uri);
@@ -28,7 +28,7 @@ export async function transcribeAndTransform({ audioUri, audioUris, mode, userNa
     const b64 = await uriToBase64(uri);
     audioParts.push({ type: 'input_audio', input_audio: { data: b64, format: 'm4a' } });
   }
-  const systemPrompt = buildSystemPrompt(mode, { userName, recipient });
+  const systemPrompt = buildSystemPromptForMode(mode, { userName, recipient });
   const userText = uris.length > 1
     ? `Transcribe the ${uris.length} audio clips below as ONE continuous message (they are sequential recordings of the same message), then apply the transformation described in the system prompt.`
     : 'Transcribe the audio and apply the transformation described in the system prompt.';

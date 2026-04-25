@@ -2,11 +2,14 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
   StyleSheet, Text, View, TouchableOpacity, ScrollView, TextInput,
-  Modal, Alert, Share, ActivityIndicator, Linking, Platform, Pressable,
+  Modal, Alert, Share, ActivityIndicator, Linking, Platform, Pressable, Switch,
 } from 'react-native';
 import { Audio } from 'expo-av';
 import * as Clipboard from 'expo-clipboard';
-import { MODES, GROUPS, parseEmailOutput } from './src/modes';
+import {
+  MODES, GROUPS, TABS, parseEmailOutput,
+  resolveMode, fullLabelFor, searchLibrary, isLibraryMode,
+} from './src/modes';
 import { transcribeAndTransform } from './src/api';
 import {
   getApiKey, setApiKey, clearApiKey,
@@ -47,65 +50,160 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showModes, setShowModes] = useState(false);
 
-  const pttRecRef = useRef(null);
-  const [pttActive, setPttActive] = useState(false);
-  const [pttCopied, setPttCopied] = useState(false);
+  // Recording state: 'idle' | 'recording' | 'paused'
+  const [recState, setRecState] = useState('idle');
+  const [clips, setClips] = useState([]);
+  const recRef = useRef(null);
+  const [justCopied, setJustCopied] = useState(false);
 
   useEffect(() => { (async () => {
     setApiKeyState(await getApiKey());
-    setSettingsState(await getSettings());
+    const s = await getSettings();
+    // If "Remember Last Preset" is off, force a fresh pick this session.
+    const sessionSettings = s.rememberLastPreset ? s : { ...s, activeMode: null };
+    setSettingsState(sessionSettings);
     setHistory(await getHistory());
     await Audio.requestPermissionsAsync();
     await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+    if (!sessionSettings.activeMode) setShowModes(true);
   })(); }, []);
 
   useEffect(() => {
-    if (pttActive) {
+    if (recState === 'recording') {
       tickRef.current = setInterval(() => setRecordSeconds(s => s + 1), 1000);
     } else if (tickRef.current) {
       clearInterval(tickRef.current); tickRef.current = null;
     }
     return () => tickRef.current && clearInterval(tickRef.current);
-  }, [pttActive]);
+  }, [recState]);
 
   if (!settings) return <View style={styles.loadingRoot}><ActivityIndicator color={COLORS.accent} /></View>;
 
-  const activeMode = settings.activeMode || 'basic';
-  const activeModeDef = MODES[activeMode] || MODES.basic;
-  const isEmailMode = activeModeDef.output === 'email';
+  const activeMode = settings.activeMode || null;
+  const activeModeDef = activeMode ? resolveMode(activeMode) : null;
+  const isEmailMode = activeModeDef?.output === 'email';
 
   async function selectMode(key) {
     const next = { ...settings, activeMode: key };
-    setSettingsState(next); await setSettings(next);
+    setSettingsState(next);
+    // Persist only if remember is on; otherwise keep storage's last value untouched.
+    if (next.rememberLastPreset) await setSettings(next);
     setShowModes(false);
   }
 
-  async function pttPressIn() {
-    if (!apiKey) { Alert.alert('No API key', 'Add your OpenRouter key in Settings.'); return; }
-    if (loading) return;
+  // ---------- Recording state machine ----------
+
+  async function startNewClip({ keepClips = true } = {}) {
     try {
-      setResult(''); setEmailParts({ subject: '', body: '' });
-      setPttCopied(false); setRecordSeconds(0);
+      setResult(''); setEmailParts({ subject: '', body: '' }); setJustCopied(false);
+      if (!keepClips) setClips([]);
+      setRecordSeconds(0);
       const rec = new Audio.Recording();
       await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await rec.startAsync();
-      pttRecRef.current = rec;
-      setPttActive(true);
+      recRef.current = rec;
+      setRecState('recording');
     } catch (e) { Alert.alert('Record error', String(e.message || e)); }
   }
 
-  async function pttPressOut() {
-    const rec = pttRecRef.current;
-    pttRecRef.current = null;
-    setPttActive(false);
-    if (!rec) return;
-    let uri = null;
-    try { await rec.stopAndUnloadAsync(); uri = rec.getURI(); } catch (e) {
-      Alert.alert('Stop error', String(e.message || e)); return;
+  async function stopCurrentClip() {
+    const rec = recRef.current;
+    recRef.current = null;
+    if (!rec) { setRecState('idle'); return null; }
+    try {
+      await rec.stopAndUnloadAsync();
+      const uri = rec.getURI();
+      if (uri) setClips(prev => [...prev, uri]);
+      setRecState('idle');
+      return uri;
+    } catch (e) {
+      Alert.alert('Stop error', String(e.message || e));
+      setRecState('idle');
+      return null;
     }
-    if (!uri) return;
+  }
+
+  // Tap-tap primary action (state-driven)
+  async function tapPrimary() {
+    if (!apiKey) { Alert.alert('No API key', 'Add your OpenRouter key in Settings.'); return; }
+    if (!activeMode) { setShowModes(true); return; }
+    if (loading) return;
+    if (recState === 'idle') {
+      await startNewClip({ keepClips: clips.length > 0 });
+      return;
+    }
+    if (recState === 'recording') {
+      await stopCurrentClip();
+      return;
+    }
+    if (recState === 'paused') {
+      try {
+        await recRef.current?.startAsync();
+        setRecState('recording');
+      } catch (e) { Alert.alert('Resume error', String(e.message || e)); }
+    }
+  }
+
+  async function togglePause() {
+    if (recState === 'recording') {
+      try { await recRef.current?.pauseAsync(); setRecState('paused'); }
+      catch (e) { Alert.alert('Pause error', String(e.message || e)); }
+    } else if (recState === 'paused') {
+      try { await recRef.current?.startAsync(); setRecState('recording'); }
+      catch (e) { Alert.alert('Resume error', String(e.message || e)); }
+    }
+  }
+
+  async function addClip() {
+    if (recState !== 'idle' || loading) return;
+    await startNewClip({ keepClips: true });
+  }
+
+  async function redoLast() {
+    if (recState !== 'idle' || loading) return;
+    setClips(prev => prev.slice(0, -1));
+    setResult(''); setJustCopied(false);
+  }
+
+  async function deleteAll() {
+    if (recRef.current) {
+      try { await recRef.current.stopAndUnloadAsync(); } catch {}
+      recRef.current = null;
+    }
+    setRecState('idle'); setClips([]); setRecordSeconds(0);
+    setResult(''); setEmailParts({ subject: '', body: '' });
+    setJustCopied(false); setLastPayload(null);
+  }
+
+  async function retakeAll() {
+    await deleteAll();
+    await startNewClip({ keepClips: false });
+  }
+
+  async function send() {
+    if (!apiKey) { Alert.alert('No API key', 'Add your OpenRouter key in Settings.'); return; }
+    if (loading) return;
+
+    // If currently recording/paused, stop and capture the final clip first.
+    let finalClips = clips;
+    if (recState === 'recording' || recState === 'paused') {
+      const rec = recRef.current;
+      recRef.current = null;
+      if (rec) {
+        try {
+          await rec.stopAndUnloadAsync();
+          const uri = rec.getURI();
+          if (uri) finalClips = [...clips, uri];
+        } catch (e) { Alert.alert('Stop error', String(e.message || e)); return; }
+      }
+      setClips(finalClips);
+      setRecState('idle');
+    }
+
+    if (!finalClips.length) { Alert.alert('Nothing to send', 'Record something first.'); return; }
+
     const payload = {
-      audioUris: [uri],
+      audioUris: finalClips,
       mode: activeMode,
       userName: settings.userName,
       recipient,
@@ -118,15 +216,14 @@ export default function App() {
       setResultMode(activeMode);
       setLastPayload(payload);
 
-      if (MODES[activeMode]?.output === 'email') {
+      if (activeModeDef.output === 'email') {
         const parts = parseEmailOutput(text);
         setEmailParts(parts);
-        // Auto-copy body for email mode
         await Clipboard.setStringAsync(parts.body || text);
       } else {
         await Clipboard.setStringAsync(text);
       }
-      setPttCopied(true);
+      setJustCopied(true);
 
       const entry = {
         id: Date.now(),
@@ -148,7 +245,8 @@ export default function App() {
       const text = await transcribeAndTransform(lastPayload);
       setResult(text);
       setResultMode(lastPayload.mode);
-      if (MODES[lastPayload.mode]?.output === 'email') {
+      const rDef = resolveMode(lastPayload.mode);
+      if (rDef?.output === 'email') {
         setEmailParts(parseEmailOutput(text));
       }
       const entry = {
@@ -182,7 +280,7 @@ export default function App() {
   }
   async function shareGeneric(text) { Share.share({ message: text }); }
 
-  const resultModeDef = resultMode ? MODES[resultMode] : null;
+  const resultModeDef = resultMode ? resolveMode(resultMode) : null;
   const resultIsEmail = resultModeDef?.output === 'email';
 
   return (
@@ -195,6 +293,7 @@ export default function App() {
           <Text style={styles.tagline}>Speak. Reshape. Send.</Text>
         </View>
         <View style={styles.headerBtns}>
+          <HeaderBtn label="New" onPress={deleteAll} green />
           <HeaderBtn label="History" onPress={() => setShowHistory(true)} />
           <HeaderBtn label="Settings" onPress={() => setShowSettings(true)} />
         </View>
@@ -205,8 +304,12 @@ export default function App() {
         <TouchableOpacity style={styles.modeCard} onPress={() => setShowModes(true)} activeOpacity={0.7}>
           <View style={{ flex: 1 }}>
             <Text style={styles.modeCardKicker}>PRESET</Text>
-            <Text style={styles.modeCardTitle}>{activeModeDef.icon}  {activeModeDef.label}</Text>
-            <Text style={styles.modeCardDesc} numberOfLines={2}>{activeModeDef.description}</Text>
+            <Text style={styles.modeCardTitle}>
+              {activeMode ? fullLabelFor(activeMode) : 'Choose a preset'}
+            </Text>
+            <Text style={styles.modeCardDesc} numberOfLines={2}>
+              {activeModeDef ? activeModeDef.description : 'Tap to pick the output style for this session.'}
+            </Text>
           </View>
           <Text style={styles.modeCardChevron}>›</Text>
         </TouchableOpacity>
@@ -222,39 +325,104 @@ export default function App() {
           />
         </View>
 
-        <View style={styles.recordSection}>
-          <Text style={styles.statusText}>
-            {loading
-              ? 'Processing…'
-              : pttActive
-                ? `Recording  ${formatTime(recordSeconds)}`
-                : pttCopied
-                  ? 'Copied — hold again to record'
-                  : 'Hold to record'}
-          </Text>
+        <View style={styles.recorderPanel}>
+
+          <View style={styles.statusBar}>
+            <View style={[
+              styles.statusDot,
+              recState === 'recording' && { backgroundColor: COLORS.danger },
+              recState === 'paused' && { backgroundColor: COLORS.warn },
+              recState === 'idle' && clips.length > 0 && { backgroundColor: COLORS.success },
+            ]} />
+            <Text style={styles.statusBarText}>
+              {loading
+                ? 'PROCESSING'
+                : recState === 'recording'
+                  ? 'RECORDING'
+                  : recState === 'paused'
+                    ? 'PAUSED'
+                    : clips.length > 0
+                      ? `READY · ${clips.length} CLIP${clips.length > 1 ? 'S' : ''}`
+                      : justCopied
+                        ? 'COPIED'
+                        : 'STANDBY'}
+            </Text>
+            <Text style={styles.statusBarTime}>{formatTime(recordSeconds)}</Text>
+          </View>
 
           <Pressable
-            onPressIn={pttPressIn}
-            onPressOut={pttPressOut}
+            onPress={tapPrimary}
             disabled={loading}
             style={({ pressed }) => [
               styles.recordButton,
+              recState === 'recording' && styles.recordButtonRecording,
+              recState === 'paused' && styles.recordButtonPaused,
               pressed && styles.recordButtonPressed,
               loading && { opacity: 0.5 },
             ]}>
-            <View style={styles.recordButtonInner}>
-              <Text style={styles.recordIcon}>●</Text>
-              <Text style={styles.recordLabel}>HOLD</Text>
-            </View>
+            <Text style={styles.recordIcon}>
+              {recState === 'recording' ? '■' : recState === 'paused' ? '▶' : '●'}
+            </Text>
+            <Text style={styles.recordLabel}>
+              {recState === 'recording' ? 'STOP' : recState === 'paused' ? 'RESUME' : 'RECORD'}
+            </Text>
           </Pressable>
 
-          {loading && <ActivityIndicator color={COLORS.accent} size="large" style={{ marginTop: 16 }} />}
+          <View style={styles.controlsRow}>
+            <ControlIcon
+              glyph={recState === 'paused' ? '▶' : '⏸'}
+              label={recState === 'paused' ? 'Resume' : 'Pause'}
+              onPress={togglePause}
+              disabled={loading || recState === 'idle'}
+            />
+            <ControlIcon
+              glyph="+"
+              label="Add"
+              onPress={addClip}
+              disabled={loading || recState !== 'idle' || clips.length === 0}
+            />
+            <ControlIcon
+              glyph="↶"
+              label="Undo"
+              onPress={redoLast}
+              disabled={loading || recState !== 'idle' || clips.length === 0}
+            />
+            <ControlIcon
+              glyph="↻"
+              label="Retake"
+              onPress={retakeAll}
+              disabled={loading || recState !== 'idle' || clips.length === 0}
+            />
+            <ControlIcon
+              glyph="✕"
+              label="Delete"
+              onPress={deleteAll}
+              disabled={loading || (recState === 'idle' && clips.length === 0)}
+              danger
+            />
+          </View>
+
+          <TouchableOpacity
+            onPress={send}
+            disabled={loading || (clips.length === 0 && recState === 'idle')}
+            style={[
+              styles.sendBtn,
+              (loading || (clips.length === 0 && recState === 'idle')) && styles.sendBtnDisabled,
+            ]}
+            activeOpacity={0.85}>
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.sendBtnText}>SEND  →</Text>
+            )}
+          </TouchableOpacity>
+
         </View>
 
         {result ? (
           resultIsEmail ? (
             <View style={styles.resultCard}>
-              <Text style={styles.resultKicker}>{resultModeDef.icon} {resultModeDef.label}</Text>
+              <Text style={styles.resultKicker}>{fullLabelFor(resultMode)}</Text>
 
               <Text style={styles.fieldLabel}>Subject</Text>
               <View style={styles.fieldBox}>
@@ -281,7 +449,7 @@ export default function App() {
             </View>
           ) : (
             <View style={styles.resultCard}>
-              <Text style={styles.resultKicker}>{resultModeDef.icon} {resultModeDef.label}</Text>
+              <Text style={styles.resultKicker}>{fullLabelFor(resultMode)}</Text>
               <View style={styles.fieldBox}>
                 <Text style={styles.fieldText} selectable>{result}</Text>
               </View>
@@ -329,10 +497,31 @@ function formatTime(s) {
   return `${m}:${ss}`;
 }
 
-function HeaderBtn({ label, onPress }) {
+function HeaderBtn({ label, onPress, green }) {
   return (
-    <TouchableOpacity onPress={onPress} style={styles.headerBtn}>
-      <Text style={styles.headerBtnText}>{label}</Text>
+    <TouchableOpacity onPress={onPress} style={[styles.headerBtn, green && styles.headerBtnGreen]}>
+      <Text style={[styles.headerBtnText, green && styles.headerBtnTextGreen]}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+function ControlIcon({ glyph, label, onPress, disabled, danger }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled}
+      activeOpacity={0.7}
+      style={[styles.ctrlIcon, disabled && styles.ctrlIconDisabled]}>
+      <View style={[
+        styles.ctrlIconCircle,
+        danger && !disabled && styles.ctrlIconCircleDanger,
+      ]}>
+        <Text style={[
+          styles.ctrlIconGlyph,
+          danger && !disabled && { color: COLORS.danger },
+        ]}>{glyph}</Text>
+      </View>
+      <Text style={styles.ctrlIconLabel}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -356,6 +545,24 @@ function ActionBtn({ label, onPress, primary, subtle }) {
 }
 
 function ModeSelectorModal({ visible, onClose, activeMode, onSelect }) {
+  const [showLib, setShowLib] = useState(false);
+  const [tab, setTab] = useState('general');
+  const libraryActive = isLibraryMode(activeMode);
+
+  // When opening, default to the tab containing the active mode.
+  useEffect(() => {
+    if (!visible) return;
+    if (activeMode && !isLibraryMode(activeMode)) {
+      const m = MODES[activeMode];
+      const g = GROUPS.find(g => g.key === m?.group);
+      if (g?.tab) setTab(g.tab);
+    } else {
+      setTab('general');
+    }
+  }, [visible, activeMode]);
+
+  const visibleGroups = GROUPS.filter(g => g.tab === tab);
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalRoot}>
@@ -363,8 +570,20 @@ function ModeSelectorModal({ visible, onClose, activeMode, onSelect }) {
           <Text style={styles.modalTitle}>Choose a preset</Text>
           <TouchableOpacity onPress={onClose}><Text style={styles.modalClose}>Done</Text></TouchableOpacity>
         </View>
+
+        <View style={styles.tabBar}>
+          {TABS.map(t => (
+            <TouchableOpacity
+              key={t.key}
+              onPress={() => setTab(t.key)}
+              style={[styles.tab, tab === t.key && styles.tabActive]}>
+              <Text style={[styles.tabText, tab === t.key && styles.tabTextActive]}>{t.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
-          {GROUPS.map(group => (
+          {visibleGroups.map(group => (
             <View key={group.key} style={{ marginBottom: 22 }}>
               <Text style={styles.groupLabel}>{group.label.toUpperCase()}</Text>
               {group.modes.map(modeKey => {
@@ -376,7 +595,6 @@ function ModeSelectorModal({ visible, onClose, activeMode, onSelect }) {
                     key={modeKey}
                     onPress={() => onSelect(modeKey)}
                     style={[styles.modeRow, active && styles.modeRowActive]}>
-                    <Text style={[styles.modeRowIcon, active && { color: COLORS.accent }]}>{m.icon}</Text>
                     <View style={{ flex: 1 }}>
                       <Text style={[styles.modeRowLabel, active && styles.modeRowLabelActive]}>{m.label}</Text>
                       <Text style={styles.modeRowDesc}>{m.description}</Text>
@@ -387,6 +605,85 @@ function ModeSelectorModal({ visible, onClose, activeMode, onSelect }) {
               })}
             </View>
           ))}
+
+          {tab === 'general' && (
+            <>
+              <Text style={styles.groupLabel}>LIBRARY</Text>
+              <TouchableOpacity
+                onPress={() => setShowLib(true)}
+                style={[styles.modeRow, libraryActive && styles.modeRowActive]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.modeRowLabel, libraryActive && styles.modeRowLabelActive]}>
+                    Browse library…
+                  </Text>
+                  <Text style={styles.modeRowDesc} numberOfLines={2}>
+                    {libraryActive
+                      ? `Active: ${resolveMode(activeMode)?.label || ''}`
+                      : '200+ prompts from the Text-Transformation-Prompt-Library — search and pick.'}
+                  </Text>
+                </View>
+                <Text style={styles.modeRowCheck}>›</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </ScrollView>
+
+        <LibraryModal
+          visible={showLib}
+          onClose={() => setShowLib(false)}
+          activeMode={activeMode}
+          onSelect={(slug) => { setShowLib(false); onSelect('lib:' + slug); }}
+        />
+      </View>
+    </Modal>
+  );
+}
+
+function LibraryModal({ visible, onClose, activeMode, onSelect }) {
+  const [query, setQuery] = useState('');
+  const results = searchLibrary(query).slice(0, 200);
+  const activeSlug = isLibraryMode(activeMode) ? activeMode.slice(4) : null;
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalRoot}>
+        <View style={styles.modalHeader}>
+          <Text style={styles.modalTitle}>Library</Text>
+          <TouchableOpacity onPress={onClose}><Text style={styles.modalClose}>Back</Text></TouchableOpacity>
+        </View>
+        <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+          <TextInput
+            style={styles.input}
+            placeholder="Search by name or description…"
+            placeholderTextColor={COLORS.textMuted}
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Text style={[styles.hint, { marginBottom: 8 }]}>{results.length} prompt{results.length === 1 ? '' : 's'}</Text>
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 0, paddingBottom: 60 }}>
+          {results.map(p => {
+            const active = p.slug === activeSlug;
+            return (
+              <TouchableOpacity
+                key={p.slug}
+                onPress={() => onSelect(p.slug)}
+                style={[styles.modeRow, active && styles.modeRowActive]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.modeRowLabel, active && styles.modeRowLabelActive]}>{p.name}</Text>
+                  {p.description ? (
+                    <Text style={styles.modeRowDesc} numberOfLines={3}>{p.description}</Text>
+                  ) : null}
+                </View>
+                {active && <Text style={styles.modeRowCheck}>✓</Text>}
+              </TouchableOpacity>
+            );
+          })}
+          {results.length === 0 && (
+            <Text style={[styles.hint, { textAlign: 'center', marginTop: 24 }]}>No matches.</Text>
+          )}
         </ScrollView>
       </View>
     </Modal>
@@ -396,10 +693,15 @@ function ModeSelectorModal({ visible, onClose, activeMode, onSelect }) {
 function SettingsModal({ visible, onClose, apiKey, onSaveKey, onClearKey, settings, onSaveSettings }) {
   const [keyInput, setKeyInput] = useState('');
   const [name, setName] = useState(settings.userName || '');
-  useEffect(() => { setName(settings.userName || ''); setKeyInput(''); }, [settings, visible]);
+  const [remember, setRemember] = useState(!!settings.rememberLastPreset);
+  useEffect(() => {
+    setName(settings.userName || '');
+    setRemember(!!settings.rememberLastPreset);
+    setKeyInput('');
+  }, [settings, visible]);
 
   async function save() {
-    const next = { ...settings, userName: name.trim() };
+    const next = { ...settings, userName: name.trim(), rememberLastPreset: remember };
     await onSaveSettings(next);
     if (keyInput.trim()) { await onSaveKey(keyInput.trim()); }
     onClose();
@@ -442,6 +744,20 @@ function SettingsModal({ visible, onClose, apiKey, onSaveKey, onClearKey, settin
             </TouchableOpacity>
           ) : null}
 
+          <Text style={styles.sectionLabel}>Behavior</Text>
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toggleLabel}>Remember last preset</Text>
+              <Text style={styles.hint}>If off, you'll be prompted to choose a preset on every launch.</Text>
+            </View>
+            <Switch
+              value={remember}
+              onValueChange={setRemember}
+              trackColor={{ true: COLORS.accent, false: COLORS.border }}
+              thumbColor="#fff"
+            />
+          </View>
+
           <View style={{ height: 28 }} />
           <TouchableOpacity style={[styles.actionBtn, styles.actionBtnPrimary]} onPress={save}>
             <Text style={[styles.actionBtnText, styles.actionBtnTextPrimary]}>Save</Text>
@@ -463,11 +779,10 @@ function HistoryModal({ visible, onClose, history, onClear, onCopy }) {
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
           {history.length === 0 && <Text style={styles.hint}>No entries yet.</Text>}
           {history.map(h => {
-            const m = MODES[h.mode];
             return (
               <View key={h.id} style={styles.histItem}>
                 <Text style={styles.histMeta}>
-                  {m?.icon || '·'} {m?.label || h.mode}
+                  {fullLabelFor(h.mode)}
                   {h.recipient ? `  ·  → ${h.recipient}` : ''}
                   {'  ·  '}{new Date(h.ts).toLocaleString()}
                 </Text>
@@ -505,6 +820,8 @@ const styles = StyleSheet.create({
   headerBtns: { flexDirection: 'row', gap: 8 },
   headerBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: COLORS.panel, borderWidth: 1, borderColor: COLORS.border },
   headerBtnText: { color: COLORS.text, fontSize: 13, fontWeight: '600' },
+  headerBtnGreen: { backgroundColor: COLORS.success, borderColor: COLORS.success },
+  headerBtnTextGreen: { color: '#fff' },
 
   modeCard: {
     flexDirection: 'row', alignItems: 'center',
@@ -533,10 +850,31 @@ const styles = StyleSheet.create({
     shadowColor: COLORS.accent, shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: 4 },
     elevation: 8,
   },
-  recordButtonPressed: { backgroundColor: COLORS.accentDim, transform: [{ scale: 0.97 }] },
+  recordButtonRecording: { backgroundColor: COLORS.danger, shadowColor: COLORS.danger },
+  recordButtonPaused: { backgroundColor: COLORS.warn, shadowColor: COLORS.warn },
+  recordButtonPressed: { transform: [{ scale: 0.97 }], opacity: 0.9 },
   recordButtonInner: { alignItems: 'center', justifyContent: 'center' },
   recordIcon: { color: '#fff', fontSize: 40, marginBottom: 4 },
   recordLabel: { color: '#fff', fontSize: 14, fontWeight: '700', letterSpacing: 2 },
+
+  controlsRow: { flexDirection: 'row', gap: 6, marginTop: 18, paddingHorizontal: 16, alignSelf: 'stretch' },
+  ctrlBtn: {
+    flex: 1, paddingVertical: 10, paddingHorizontal: 4, borderRadius: 8,
+    backgroundColor: COLORS.panel, borderWidth: 1, borderColor: COLORS.border,
+    alignItems: 'center', justifyContent: 'center', minHeight: 40,
+  },
+  ctrlBtnDanger: { borderColor: COLORS.danger },
+  ctrlBtnDisabled: { opacity: 0.35 },
+  ctrlBtnText: { color: COLORS.text, fontSize: 12, fontWeight: '600' },
+  ctrlBtnTextDanger: { color: COLORS.danger },
+  ctrlBtnTextDisabled: { color: COLORS.textMuted },
+  sendBtn: {
+    marginTop: 16, paddingVertical: 14, paddingHorizontal: 36, borderRadius: 12,
+    backgroundColor: COLORS.success, minWidth: 220, alignItems: 'center',
+    shadowColor: COLORS.success, shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  sendBtnText: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 2 },
 
   resultCard: {
     margin: 16, padding: 16, borderRadius: 14,
@@ -570,6 +908,18 @@ const styles = StyleSheet.create({
   },
   modalTitle: { color: COLORS.text, fontSize: 20, fontWeight: '700' },
   modalClose: { color: COLORS.accent, fontSize: 15, fontWeight: '600' },
+
+  tabBar: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 8 },
+  tab: {
+    flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center',
+    backgroundColor: COLORS.panel, borderWidth: 1, borderColor: COLORS.border,
+  },
+  tabActive: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
+  tabText: { color: COLORS.textDim, fontSize: 13, fontWeight: '700', letterSpacing: 0.3 },
+  tabTextActive: { color: '#fff' },
+
+  toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 },
+  toggleLabel: { color: COLORS.text, fontSize: 14, fontWeight: '600', marginBottom: 4 },
 
   groupLabel: { color: COLORS.textMuted, fontSize: 11, fontWeight: '700', letterSpacing: 1.5, marginBottom: 8, paddingLeft: 4 },
   modeRow: {
